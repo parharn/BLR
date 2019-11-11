@@ -3,22 +3,27 @@ set -xeuo pipefail
 
 samtools --version
 bowtie2 --version
+minimap2 --version
 picard SamToFastq --version || true
 cutadapt --version
 starcode --version
 snakemake --version
 blr --version
+samblaster --version
+sambamba --version
 
-( cd testdata && bowtie2-build chr1mini.fasta chr1mini > /dev/null )
+( cd testdata && bwa index chr1mini.fasta )
+( cd testdata && bowtie2-build chr1mini.fasta chr1mini.fasta > /dev/null )
 
-rm -rf outdir
-blr init --r1=testdata/reads.1.fastq.gz outdir
-cp tests/test_config.yaml outdir/blr.yaml
-cd outdir
+pytest -v tests/
+
+rm -rf outdir-bowtie2
+blr init --r1=testdata/reads.1.fastq.gz outdir-bowtie2
+cp tests/test_config.yaml outdir-bowtie2/blr.yaml
+pushd outdir-bowtie2
 blr run
-
 m=$(samtools view mapped.sorted.tag.mkdup.bcmerge.mol.filt.bam | md5sum | cut -f1 -d" ")
-test $m == 20407296d48b01df24ffecc35eb5acf3
+test $m == e389e3f6e8ba14466f232b19fa1a0ee5
 
 # Test phasing
 blr run phasing_stats.txt

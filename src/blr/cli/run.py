@@ -11,6 +11,10 @@ from snakemake import snakemake
 logger = logging.getLogger(__name__)
 
 
+class SnakemakeError(Exception):
+    pass
+
+
 def add_arguments(parser):
     arg = parser.add_argument
     arg('--dryrun', '-n', default=False, action='store_true',
@@ -22,11 +26,30 @@ def add_arguments(parser):
         'Default: %(default)s')
     arg('--keepgoing', '-k', default=False, action='store_true',
         help='If one job fails, finish the others.')
+    arg("--dag", default=False, action='store_true',
+        help="Print the dag in the graphviz dot language (requires graphviz to be installed). Default: %(default)s. "
+             "To get output to pdf file, pipe output into dot as follows: blr run --dag | dot -Tpdf > dag.pdf")
     arg('targets', nargs='*', default=[],
         help='File(s) to create. If omitted, the full pipeline is run.')
 
 
 def main(args):
+    targets = args.targets if args.targets else None
+    try:
+        run(args.dryrun, args.cores, args.keepgoing, args.dag, targets)
+    except SnakemakeError:
+        sys.exit(1)
+    sys.exit(0)
+
+
+def run(
+    dryrun: bool = False,
+    cores: int = 4,
+    keepgoing: bool = False,
+    printdag: bool = False,
+    targets=None,
+    workdir=None,
+):
     # snakemake sets up its own logging, and this cannot be easily changed
     # (setting keep_logger=True crashes), so remove our own log handler
     # for now
@@ -35,10 +58,13 @@ def main(args):
         success = snakemake(
             snakefile_path,
             snakemakepath='snakemake',
-            dryrun=args.dryrun,
-            cores=args.cores,
-            keepgoing=args.keepgoing,
+            dryrun=dryrun,
+            cores=cores,
+            keepgoing=keepgoing,
             printshellcmds=True,
-            targets=args.targets if args.targets else None,
+            printdag=printdag,
+            targets=targets,
+            workdir=workdir,
         )
-    sys.exit(0 if success else 1)
+    if not success:
+        raise SnakemakeError()

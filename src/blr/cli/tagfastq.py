@@ -22,7 +22,6 @@ import logging
 import sys
 import dnaio
 from tqdm import tqdm
-from collections import namedtuple
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +33,6 @@ def main(args):
     # canonical sequence.
     with open(args.corrected_barcodes, "r") as reader:
         corrected_barcodes = parse_corrected_barcodes(reader)
-
-    # Get the raw barcodes and create a dictionary pointing each read header to the raw
-    # barcode sequence.
-    with dnaio.open(args.raw_barcodes, mode="r") as reader:
-        raw_barcodes = parse_raw_barcodes(reader)
 
     in_interleaved = not args.input2
     logger.info(f"Input detected as {'interleaved' if in_interleaved else 'paired'} FASTQ.")
@@ -52,30 +46,40 @@ def main(args):
     out_interleaved = not args.output2
     logger.info(f"Output detected as {'interleaved' if out_interleaved else 'paired'} FASTQ.")
 
+    raw_barcodes_cache = dict()
     reads_missing_barcode = 0
-    # Parse input FASTA/FASTQ for read1 and read2 and write output
-    with dnaio.open(args.input1, file2=args.input2, interleaved=in_interleaved, mode="r") as reader, \
-            dnaio.open(args.output1, file2=args.output2, interleaved=out_interleaved, mode="w") as writer:
+    separator = args.sep
+    # Parse input FASTA/FASTQ for read1 and read2, raw barcodes and write output
+    with dnaio.open(args.input1, file2=args.input2, interleaved=in_interleaved, mode="r",
+                    fileformat="fastq") as reader, \
+            dnaio.open(args.output1, file2=args.output2, interleaved=out_interleaved, mode="w",
+                       fileformat="fastq") as writer, \
+            dnaio.open(args.raw_barcodes, mode="r") as raw_bc_reader:
+
+        raw_bc_iterator = parse_raw_barcodes(raw_bc_reader)
+
         for read1, read2 in tqdm(reader, desc="Read pairs processed"):
             # Header parsing
             name_and_pos_r1, read_and_index_r1 = read1.name.split(maxsplit=1)
             name_and_pos_r2, read_and_index_r2 = read2.name.split(maxsplit=1)
 
-            try:
-                raw_barcode_seq = raw_barcodes[name_and_pos_r1]
-            except KeyError:
-                raw_barcode_seq = None
-                reads_missing_barcode += 1
+            raw_barcode_seq, raw_barcodes_cache = search_bc(raw_bc_iterator, name_and_pos_r1, raw_barcodes_cache)
 
+            # Check if barcode was found and update header with barcode info.
             if raw_barcode_seq:
-                corr_barcode = corrected_barcodes[raw_barcode_seq]
+                corr_barcode_seq = corrected_barcodes[raw_barcode_seq]
 
-                # Make new string with barcode sequence and id to add to headers.
-                new_text = f"{corr_barcode.seq}_{args.barcode_cluster_tag}:Z:{corr_barcode.index}"
+                raw_barcode_id = f"{args.sequence_tag}:Z:{raw_barcode_seq}"
+                corr_barcode_id = f"{args.barcode_tag}:Z:{corr_barcode_seq}"
+
+                # Create new name with barcode information.
+                new_name = separator.join([name_and_pos_r1, raw_barcode_id, corr_barcode_id])
 
                 # Save header to read instances
-                read1.name = f"{name_and_pos_r1}_{new_text} {read_and_index_r1}"
-                read2.name = f"{name_and_pos_r2}_{new_text} {read_and_index_r2}"
+                read1.name = " ".join([new_name, read_and_index_r1])
+                read2.name = " ".join([new_name, read_and_index_r2])
+            else:
+                reads_missing_barcode += 1
 
             # Write to out
             writer.write(read1, read2)
@@ -85,20 +89,33 @@ def main(args):
     logger.info("Finished")
 
 
+def search_bc(iterator: iter, header: str, cache: dict, maxiter: int = 10):
+    # Check it header is stored in cache. If not move forward on step in iterator at look again.
+    iteration = 0
+    while header not in cache and iteration < maxiter:
+        iteration += 1
+        # Progress iterator
+        try:
+            cache.update(next(iterator))
+        except StopIteration:
+            break
+
+    barcode_seq = cache.pop(header, None)
+
+    return barcode_seq, cache
+
+
 def parse_corrected_barcodes(open_file):
     """
     Parse starcode cluster output and return a dictionary with raw sequences pointing to a
     corrected canonical sequence
     :param open_file: starcode tabular output file.
-    :return: dict: raw sequences pointing to a nametuple containing corrected canonical
-    sequence and index.
+    :return: dict: raw sequences pointing to a corrected canonical sequence.
     """
-    target = namedtuple("Cluster", ['seq', 'index'])
     corrected_barcodes = dict()
-    for index, cluster in tqdm(enumerate(open_file.readlines(), start=1), desc="Clusters processed"):
+    for cluster in tqdm(open_file, desc="Clusters processed"):
         canonical_seq, _, cluster_seqs = cluster.strip().split("\t", maxsplit=3)
-        cluster_target = target(seq=canonical_seq, index=index)
-        corrected_barcodes.update({raw_seq: cluster_target for raw_seq in cluster_seqs.split(",")})
+        corrected_barcodes.update({raw_seq: canonical_seq for raw_seq in cluster_seqs.split(",")})
     return corrected_barcodes
 
 
@@ -109,11 +126,9 @@ def parse_raw_barcodes(open_file):
     :param open_file: dnaio odject.
     :return: dict: entry headers pointing to a raw barcodes sequence
     """
-    raw_barcodes = dict()
     for barcode in tqdm(open_file, desc="Raw barcodes processed"):
         header, _ = barcode.name.split(maxsplit=1)
-        raw_barcodes[header] = barcode.sequence
-    return raw_barcodes
+        yield {header: barcode.sequence}
 
 
 def add_arguments(parser):
@@ -142,6 +157,12 @@ def add_arguments(parser):
         help="Output FASTQ/FASTA name for read2. If not specified but --o1/--output1 given the "
              "result is written as interleaved .")
     parser.add_argument(
-        "--barcode-cluster-tag", "--bc", default="BX",
-        help="BAM file tag where barcode cluster id is stored. 10x genomics longranger output "
-             "uses 'BX' for their error corrected barcodes. Default: %(default)s")
+        "-b", "--barcode-tag", default="BX",
+        help="SAM tag for storing the error corrected barcode. Default: %(default)s")
+    parser.add_argument(
+        "-s", "--sequence-tag", default="RX",
+        help="SAM tag for storing the raw barcode sequence. Default: %(default)s")
+    parser.add_argument(
+        "--sep", default="_",
+        help="Character used as separator for storing SAM tags in the FASTQ/FASTA header. Default: %(default)s"
+    )

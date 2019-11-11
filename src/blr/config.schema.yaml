@@ -21,13 +21,17 @@ properties:
     type: string
     description: SAM tag to use for store original barcode sequence in bam file. 'RX' is 10x genomic default
     default: RX
-  bowtie2_reference:
-    type: [ "string", "null" ]
-    description: Path to bowtie2 reference for mapping
-  picard_command:
+  read_mapper:
     type: string
-    description: Picard command to be used.
-    default: picard
+    pattern: "bwa|bowtie2|minimap2"
+    description: Which read mapper to use
+  duplicate_marker:
+    type: string
+    pattern: "sambamba|samblaster"
+    description: Which duplicate marking tools to use
+  genome_reference:
+    type: [ "string", "null" ]
+    description: Reference index prefix
   h1:
     type: string
     description: h1 adaptor sequnce, appears before barcode in read1
@@ -40,10 +44,6 @@ properties:
   barcode_len:
     type: integer
     description: Length of barcode sequence
-  hapcut2:
-    type: string
-    description: Hapcut2 command to be used.
-    default: .
   reference_variants:
     type: [ "string", "null" ]
     description: Path to reference variants, if not provided then variant will be called by freebayes

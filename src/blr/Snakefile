@@ -1,5 +1,4 @@
 from snakemake.utils import validate
-import os
 
 configfile: "blr.yaml"
 validate(config, "config.schema.yaml")
@@ -36,6 +35,8 @@ rule tag_fastq:
         "blr tagfastq"
         " --o1 {output.r1_fastq}"
         " --o2 {output.r2_fastq}"
+        " -b {config[cluster_tag]}"
+        " -s {config[sequence_tag]}"
         " {input.raw_barcodes}"
         " {input.corr_barcodes}"
         " {input.r1_fastq}"
@@ -61,34 +62,56 @@ rule starcode_clustering:
         " 2> {log}"
 
 
-rule bowtie2_mapping:
-    # Mapping of trimmed FASTQ to reference using bowtie2 and sorting output using samtools.
+rule map_reads:
     output:
         bam = "mapped.sorted.bam"
     input:
         r1_fastq = "trimmed_barcoded.1.fastq.gz",
         r2_fastq = "trimmed_barcoded.2.fastq.gz"
     threads: 20
-    params:
-        reference = config["bowtie2_reference"]
-    log: "bowtie2_mapping.log"
-    shell:
-        "bowtie2"
-        " --reorder"
-        " -1 {input.r1_fastq}"
-        " -2 {input.r2_fastq}"
-        " -x {params.reference}"
-        " --maxins 2000"
-        " -p {threads} 2> {log} |"
-        "samtools sort -"
-        " -@ {threads}"
-        " -O BAM > {output.bam}"
+    log: "read_mapping.log"
+    run:
+        commands = {
+            "bwa":
+                "bwa mem"
+                " -t {threads}"
+                " {config[genome_reference]}"
+                " {input.r1_fastq}"
+                " {input.r2_fastq}",
+            "bowtie2":
+                "bowtie2"
+                " -p {threads}"
+                " --reorder"
+                " --maxins 2000"
+                " -x {config[genome_reference]}"
+                " -1 {input.r1_fastq}"
+                " -2 {input.r2_fastq}",
+            "minimap2":
+                "minimap2"
+                " -ax sr"
+                " -t {threads}"
+                " {config[genome_reference]}"
+                " {input.r1_fastq}"
+                " {input.r2_fastq}",
+        }
+        command = commands[config["read_mapper"]].format(**locals(), **globals())
+
+        # Add duplicate marking to map_reads pipe if samblaster selected.
+        mkdup = "samblaster |" if config["duplicate_marker"] == "samblaster" else ""
+
+        shell(
+            "{command} 2> >(tee {log} >&2) |"
+            "{mkdup}"
+            "samtools sort -"
+            " -@ {threads}"
+            " -O BAM > {output.bam}"
+        )
 
 
 rule tagbam:
     # Add barcodes to BAM
     output:
-        bam = "mapped.sorted.tag.bam"
+        bam = "mapped.sorted.tag.mkdup.bam" if config['duplicate_marker'] == 'samblaster' else "mapped.sorted.tag.bam"
     input:
         bam = "mapped.sorted.bam"
     log: "tag_bam.stderr"
@@ -96,7 +119,7 @@ rule tagbam:
         "blr tagbam"
         " {input.bam}"
         " {output.bam}"
-        " --bc {config[cluster_tag]} 2> {log}"
+        " -b {config[cluster_tag]} 2> {log}"
 
 
 rule mark_duplicates:
@@ -104,18 +127,13 @@ rule mark_duplicates:
         bam = "mapped.sorted.tag.mkdup.bam"
     input:
         bam = "mapped.sorted.tag.bam"
-    log:
-        metrics = "picard_mkdup_metrics.log",
-        stderr = "picard_mkdup.log"
-    params:
-        picard_command = config["picard_command"],
-        heap_space=config["heap_space"]
+    log: "mark_duplicates.log"
+    threads: 20
     shell:
-        "{params.picard_command} -Xms{params.heap_space}g MarkDuplicates"
-        " I={input.bam}"
-        " O={output.bam}"
-        " M={log.metrics}"
-        " ASSUME_SORT_ORDER=coordinate 2> {log.stderr}"
+        "sambamba markdup"
+        " -t {threads}"
+        " {input.bam}"
+        " {output.bam} 2> {log}"
 
 
 rule clusterrmdup:
@@ -131,7 +149,7 @@ rule clusterrmdup:
         " {input.bam}"
         " {output.bam}"
         " {output.merges}"
-        " -bc {config[cluster_tag]} 2>> {log}"
+        " -b {config[cluster_tag]} 2>> {log}"
 
 
 rule buildmolecules:
@@ -147,7 +165,7 @@ rule buildmolecules:
         " {output.bam}"
         " -m {config[molecule_tag]}"
         " -n {config[num_mol_tag]}"
-        " -bc {config[cluster_tag]}"
+        " -b {config[cluster_tag]}"
         " 2> {log}"
 
 
@@ -163,9 +181,10 @@ rule filterclusters:
         "blr filterclusters"
         " {input.bam}"
         " -"
-        " -mn {config[num_mol_tag]}"
+        " -m {config[molecule_tag]}"
+        " -n {config[num_mol_tag]}"
+        " -b {config[cluster_tag]}"
         " -M 260"
-        " -t {config[cluster_tag]} {config[molecule_tag]} {config[num_mol_tag]} {config[sequence_tag]}"
         " 2>> {log} |"
         " tee {output.bam} |"
         " samtools index  - {output.bai}"
@@ -179,23 +198,18 @@ rule bam_to_fastq:
     input:
         bam = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.bam"
     log: "picard_samtofastq.log"
-    params:
-        picard_command = config["picard_command"],
-        heap_space=config["heap_space"]
     shell:
-        "{params.picard_command} -Xms{params.heap_space}g SamToFastq"
+        "picard -Xms{config[heap_space]}g SamToFastq"
         " I={input.bam}"
         " FASTQ={output.r1_fastq}"
         " SECOND_END_FASTQ={output.r2_fastq} 2>> {log}"
 
 
-if config['reference_variants']:
+if config["reference_variants"]:
     rule link:
         output: "reference.vcf"
-        params: config['reference_variants']
-        run:
-            cmd = "ln -s " + os.path.abspath(config['reference_variants']) + " " + str(output)
-            shell(cmd)
+        shell:
+            "ln -s {config[reference_variants]} {output}"
 else:
     rule call_variants_freebayes:
         output:
@@ -203,9 +217,7 @@ else:
         input:
              bam = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.bam"
         log: "call_variants_freebayes.log"
-        params:
-            reference = config["bowtie2_reference"] + ".fasta" # I am unsure if this is a good solution, but it works.
         shell:
              "freebayes"
-             " -f {params.reference}"
+             " -f {config[reference]}.fasta"
              " {input.bam} 1> {output.vcf} 2> {log}"
