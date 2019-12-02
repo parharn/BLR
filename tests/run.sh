@@ -4,7 +4,6 @@ set -xeuo pipefail
 samtools --version
 bowtie2 --version
 minimap2 --version
-picard SamToFastq --version || true
 cutadapt --version
 starcode --version
 snakemake --version
@@ -19,7 +18,12 @@ pytest -v tests/
 
 rm -rf outdir-bowtie2
 blr init --r1=testdata/reads.1.fastq.gz outdir-bowtie2
-cp tests/test_config.yaml outdir-bowtie2/blr.yaml
+blr config \
+    --file outdir-bowtie2/blr.yaml \
+    --set genome_reference ../testdata/chr1mini.fasta \
+    --set reference_variants ../testdata/HG002_GRCh38_GIAB_highconf.chr1mini.vcf \
+    --set phasing_ground_truth ../testdata/HG002_GRCh38_GIAB_highconf_triophased.chr1mini.vcf
+
 pushd outdir-bowtie2
 blr run
 m=$(samtools view mapped.sorted.tag.mkdup.bcmerge.mol.filt.bam | md5sum | cut -f1 -d" ")

@@ -6,8 +6,8 @@ Conda environment files
 
 There are two types of files that describe Conda environments.
 
-- The file ``environment.yml`` contains abstract dependencies such as ``pysam``,
-  ``bowtie2`` or ``picard=2.10``. This file is managed manually and needs to be
+- The file ``environment.yml`` contains abstract dependencies such as ``pysam`` or
+  ``bowtie2``. This file is managed manually and needs to be
   updated whenever there are new dependencies or when the required version for a
   dependency changes.
 
@@ -35,4 +35,4 @@ where that information is defined.
     "MI", "-m, --molecule-tag", "SAM tag for storing molecule index specifying a identified molecule
     for each barcode."
     "MN", "-n, --number-tag", "SAM tag for storing molecule count for a particular barcode."
-    "RX", "-r, --raw-barcode-tag", "SAM tag for storing the raw barcode sequence."
+    "RX", "-s, --sequence-tag", "SAM tag for storing the uncorrected barcode sequence."

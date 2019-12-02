@@ -14,50 +14,20 @@ rule final:
     input: "reads.1.final.fastq.gz", "reads.2.final.fastq.gz"
 
 
-rule compress:
-    output: "{sample}.fastq.gz"
-    input: "{sample}.fastq"
-    shell:
-        "pigz < {input} > {output}"
-
-
-rule tag_fastq:
-    output:
-        r1_fastq="trimmed_barcoded.1.fastq.gz",
-        r2_fastq="trimmed_barcoded.2.fastq.gz"
-    input:
-        r1_fastq="trimmed.1.fastq.gz",
-        r2_fastq="trimmed.2.fastq.gz",
-        raw_barcodes="barcodes.fasta",
-        corr_barcodes="barcodes.clstr"
-    log: "tag_fastq.log"
-    shell:
-        "blr tagfastq"
-        " --o1 {output.r1_fastq}"
-        " --o2 {output.r2_fastq}"
-        " -b {config[cluster_tag]}"
-        " -s {config[sequence_tag]}"
-        " {input.raw_barcodes}"
-        " {input.corr_barcodes}"
-        " {input.r1_fastq}"
-        " {input.r2_fastq}"
-        " 2> {log}"
-
-
 rule starcode_clustering:
     # Cluster DBS barcodes using starcode
     output:
         "barcodes.clstr"
     input:
-        "barcodes.fasta"
+        "barcodes.fasta.gz"
     threads: 20
     log: "starcode_clustering.log"
     shell:
-        "starcode"
-        " -i {input}"
+        "pigz -cd {input} |"
+        " starcode"
         " -o {output}"
         " -t {threads}"
-        " -d 2"
+        " -d {config[barcode_max_dist]}"
         " --print-clusters"
         " 2> {log}"
 
@@ -66,8 +36,8 @@ rule map_reads:
     output:
         bam = "mapped.sorted.bam"
     input:
-        r1_fastq = "trimmed_barcoded.1.fastq.gz",
-        r2_fastq = "trimmed_barcoded.2.fastq.gz"
+        r1_fastq = "trimmed.barcoded.1.fastq.gz",
+        r2_fastq = "trimmed.barcoded.2.fastq.gz"
     threads: 20
     log: "read_mapping.log"
     run:
@@ -118,7 +88,7 @@ rule tagbam:
     shell:
         "blr tagbam"
         " {input.bam}"
-        " {output.bam}"
+        " -o {output.bam}"
         " -b {config[cluster_tag]} 2> {log}"
 
 
@@ -147,22 +117,24 @@ rule clusterrmdup:
     shell:
         "blr clusterrmdup"
         " {input.bam}"
-        " {output.bam}"
         " {output.merges}"
+        " -o {output.bam}"
         " -b {config[cluster_tag]} 2>> {log}"
 
 
 rule buildmolecules:
     # Groups reads into molecules depending on their genomic position and barcode
     output:
-        bam = "mapped.sorted.tag.mkdup.bcmerge.mol.bam"
+        bam = "mapped.sorted.tag.mkdup.bcmerge.mol.bam",
+        stats = expand("{stat}.tsv", stat=['molecules_per_bc', 'molecule_stats'])
     input:
         bam = "mapped.sorted.tag.mkdup.bcmerge.bam"
     log: "buildmolecules.log"
     shell:
         "blr buildmolecules"
         " {input.bam}"
-        " {output.bam}"
+        " -o {output.bam}"
+        " --stats-files"
         " -m {config[molecule_tag]}"
         " -n {config[num_mol_tag]}"
         " -b {config[cluster_tag]}"
@@ -180,11 +152,10 @@ rule filterclusters:
     shell:
         "blr filterclusters"
         " {input.bam}"
-        " -"
         " -m {config[molecule_tag]}"
         " -n {config[num_mol_tag]}"
         " -b {config[cluster_tag]}"
-        " -M 260"
+        " -M {config[max_molecules_per_bc]}"
         " 2>> {log} |"
         " tee {output.bam} |"
         " samtools index  - {output.bai}"
@@ -193,31 +164,33 @@ rule filterclusters:
 rule bam_to_fastq:
     # Convert final BAM file to FASTQ files for read 1 and 2
     output:
-        r1_fastq = "reads.1.final.fastq",
-        r2_fastq = "reads.2.final.fastq"
+        r1_fastq = "reads.1.final.fastq.gz",
+        r2_fastq = "reads.2.final.fastq.gz"
     input:
         bam = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.bam"
-    log: "picard_samtofastq.log"
+    log: "samtools-fastq.log"
+    threads: 20
     shell:
-        "picard -Xms{config[heap_space]}g SamToFastq"
-        " I={input.bam}"
-        " FASTQ={output.r1_fastq}"
-        " SECOND_END_FASTQ={output.r2_fastq} 2>> {log}"
+        "samtools fastq"
+        " -@ {threads}"
+        " {input.bam}"
+        " -1 {output.r1_fastq}"
+        " -2 {output.r2_fastq} 2>> {log}"
 
 
-if config["reference_variants"]:
-    rule link:
-        output: "reference.vcf"
-        shell:
-            "ln -s {config[reference_variants]} {output}"
-else:
-    rule call_variants_freebayes:
-        output:
-             vcf = "reference.vcf"
-        input:
-             bam = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.bam"
-        log: "call_variants_freebayes.log"
-        shell:
-             "freebayes"
-             " -f {config[reference]}.fasta"
-             " {input.bam} 1> {output.vcf} 2> {log}"
+rule symlink_reference_variants:
+    output: "variants.reference.vcf"
+    shell:
+        "ln -s {config[reference_variants]} {output}"
+
+
+rule call_variants_freebayes:
+    output:
+         vcf = "variants.called.vcf"
+    input:
+         bam = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.bam"
+    log: "call_variants_freebayes.log"
+    shell:
+         "freebayes"
+         " -f {config[genome_reference]}"
+         " {input.bam} 1> {output.vcf} 2> {log}"
