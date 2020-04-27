@@ -2,34 +2,53 @@
 Update configuration file. If no --set option is given the current settings are printed.
 """
 import sys
-import os
 import logging
 from ruamel.yaml import YAML
 from snakemake.utils import validate
 import pkg_resources
+from pathlib import Path
+from typing import List, Tuple
+from shutil import get_terminal_size
 
 logger = logging.getLogger(__name__)
-DEFAULT_PATH = "blr.yaml"
+DEFAULT_PATH = Path("blr.yaml")
 SCHEMA_FILE = "config.schema.yaml"
 
 
+# Script is based on repos NBISSweden/IgDisover config script.
+# Link https://github.com/NBISweden/IgDiscover/blob/master/src/igdiscover/cli/config.py
+
 def main(args):
-    # Script is based on repos NBISSweden/IgDisover config script.
-    # Link https://github.com/NBISweden/IgDiscover/blob/master/src/igdiscover/cli/config.py
+    run(yaml_file=args.file, changes_set=args.set)
 
-    if args.set:
-        change_config(args.file, args.set)
+
+def run(yaml_file=DEFAULT_PATH, changes_set=None):
+    if changes_set:
+        change_config(yaml_file, changes_set)
     else:
-        configs, yaml = load_yaml(args.file)
-        print(f"--- CONFIGS IN: {args.file} ---")
-        yaml.dump(configs, stream=sys.stdout)
+        print_config(yaml_file)
 
 
-def change_config(filename, changes_set):
+def print_config(filename: Path):
+    """
+    Print out current configs to terminal.
+    """
+    configs, yaml = load_yaml(filename)
+    width, _ = get_terminal_size()
+    header = f" CONFIGS IN: {filename} "
+    padding = int((width - len(header)) / 2) * "="
+
+    # Print out current setting
+    print(f"{padding}{header}{padding}")
+    yaml.dump(configs, stream=sys.stdout)
+    print(f"{'=' * width}")
+
+
+def change_config(filename: Path, changes_set: List[Tuple[str, str]]):
     """
     Change config YAML file at filename using the changes_set key-value pairs.
-    :param filename: string with path to YAML config file to change.
-    :param changes_set: dict with changes to incorporate.
+    :param filename: Path to YAML config file to change.
+    :param changes_set: changes to incorporate.
     """
     # Get configs from file.
     configs, yaml = load_yaml(filename)
@@ -48,13 +67,13 @@ def change_config(filename, changes_set):
     validate(configs, schema_path)
 
     # Write first to temporary file then overwrite filename.
-    tmpfile = filename + ".tmp"
+    tmpfile = Path(str(filename) + ".tmp")
     with open(tmpfile, "w") as file:
         yaml.dump(configs, stream=file)
-    os.rename(tmpfile, filename)
+    tmpfile.rename(filename)
 
 
-def load_yaml(filename):
+def load_yaml(filename: Path):
     """
     Load YAML file and return the yaml object and data.
     :param filename: Path to YAML file
@@ -70,5 +89,5 @@ def add_arguments(parser):
     parser.add_argument("--set", nargs=2, metavar=("KEY", "VALUE"), action="append",
                         help="Set KEY to VALUE. Use KEY.SUBKEY[.SUBSUBKEY...] for nested keys. For empty values "
                              "write 'null'. Can be given multiple times.")
-    parser.add_argument("--file", default=DEFAULT_PATH,
+    parser.add_argument("--file", default=DEFAULT_PATH, type=Path,
                         help="Configuration file to modify. Default: %(default)s in current directory.")

@@ -3,29 +3,26 @@ Removes barcode tags present at more than -M loci (corresponding to removing bar
 which had more than -M molecules in one and the same droplet).
 """
 
-import pysam
 import logging
 from collections import Counter
 from tqdm import tqdm
 
-from blr import utils
+from blr.utils import get_bamtag, PySAMIO, print_stats
 
 logger = logging.getLogger(__name__)
-summary = Counter()
 
 
 def main(args):
     tags_to_remove = [args.barcode_tag, args.molecule_tag, args.number_tag]
     removed_tags = {tag: set() for tag in tags_to_remove}
-
+    summary = Counter()
     logger.info("Starting")
 
     # Writes filtered out
-    with pysam.AlignmentFile(args.input, "rb") as openin, \
-            pysam.AlignmentFile(args.output, "wb", template=openin) as openout:
-        for read in tqdm(openin.fetch(until_eof=True)):
+    with PySAMIO(args.input, args.output, __name__) as (openin, openout):
+        for read in tqdm(openin.fetch(until_eof=True), desc="Filtering input", unit="reads"):
             summary["Total reads"] += 1
-            no_mols = utils.get_bamtag(pysam_read=read, tag=args.number_tag)
+            no_mols = get_bamtag(pysam_read=read, tag=args.number_tag)
 
             # If barcode is not in all_molecules the barcode does not have enough proximal reads to make a single
             # molecule. If the barcode has more than <max_molecules> molecules, remove it from the read.
@@ -42,7 +39,7 @@ def main(args):
 
     logger.info("Finished")
 
-    utils.print_stats(summary, name=__name__)
+    print_stats(summary, name=__name__)
 
 
 def strip_barcode(pysam_read, tags_to_be_removed, removed_tags):

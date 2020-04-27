@@ -3,41 +3,99 @@ from snakemake.utils import validate
 configfile: "blr.yaml"
 validate(config, "config.schema.yaml")
 
+# TODO include handling of reads from `longranger basic` that already have barcodes extracted and trimmed? See issue
+#  in ema when discussed https://github.com/arshajii/ema/issues/15
+
 # Import rules for trimming fastq files.
-include: "rules/trim.smk"
+if config["library_type"] == "blr":
+    include: "rules/trim_blr.smk"
+elif config["library_type"] == "10x":
+    include: "rules/trim_10x.smk"
 
 # Import rules for phasing
 include: "rules/phasing.smk"
 
 
 rule final:
-    input: "reads.1.final.fastq.gz", "reads.2.final.fastq.gz"
+   input:
+        "reads.1.final.fastq.gz",
+        "reads.2.final.fastq.gz",
+        "phasing_stats.txt",
+        "multiqc_report.html"
 
 
-rule starcode_clustering:
-    # Cluster DBS barcodes using starcode
+rule fastqc_raw_reads:
+    # Creates fastqc reports from raw read files. Output names are automatically given by fastqc.
     output:
-        "barcodes.clstr"
+        qc = expand("trimmed.barcoded.{nr}_fastqc.html", nr=(1,2)),
+        zip = expand("trimmed.barcoded.{nr}_fastqc.zip", nr=(1,2))
     input:
-        "barcodes.fasta.gz"
-    threads: 20
-    log: "starcode_clustering.log"
+        reads = expand("trimmed.barcoded.{nr}.fastq.gz", nr=(1,2)),
+    log:
+        "fastqc_raw_reads.log"
     shell:
-        "pigz -cd {input} |"
-        " starcode"
-        " -o {output}"
-        " -t {threads}"
-        " -d {config[barcode_max_dist]}"
-        " --print-clusters"
+        "fastqc"
+        " {input.reads}"
         " 2> {log}"
+
+
+rule multiqc_summarize:
+    # Summarizes all reports into one html report. Automatically identifies input/gives output names but by adding
+    # more input files it controls when snakemake runs the multiqc summary.
+    output:
+        multiqc_data_dir = directory("multiqc_data"),
+        summarized_reports = "multiqc_report.html"
+    input:
+        raw_read_1_qc = "trimmed.barcoded.1_fastqc.html",
+        raw_read_2_qc = "trimmed.barcoded.2_fastqc.html",
+        bam = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.bam",
+        plots = "figures"
+    log:
+        "multiqc.log"
+    shell:
+        "multiqc"
+        " ."
+        " 2> {log}"
+
+
+def plot_figures_input(*unused):
+    if config["library_type"] == "blr":
+        return "molecule_stats.tsv", "barcodes.clstr"
+    else:
+        return "molecule_stats.tsv"
+
+
+rule plot_figures:
+    output: directory("figures")
+    input: plot_figures_input
+    log: "plot_figures.log"
+    shell:
+        "blr plot"
+        " {input}"
+        " -o {output} 2> {log}"
+
+
+rule barcode_sort_fastq:
+    # Assumes barcode read name is followed by barcode sequence.
+    # Exmaple: @ST-E00269:339:H27G2CCX2:7:1102:21186:8060:AAAAAAAATATCTACGCTCA BX:Z:AAAAAAAATATCTACGCTCA
+    output:
+        fastq = "sorted.{nr}.fastq.gz"
+    input:
+        fastq = "trimmed.barcoded.{nr}.fastq.gz"
+    shell:
+        "pigz -cd -p 1 {input.fastq} |"
+        " paste - - - - |"
+        " sort -t ' ' -k2 |"
+        " tr '\t' '\n' |"
+        " pigz > {output.fastq}"
 
 
 rule map_reads:
     output:
         bam = "mapped.sorted.bam"
     input:
-        r1_fastq = "trimmed.barcoded.1.fastq.gz",
-        r2_fastq = "trimmed.barcoded.2.fastq.gz"
+        r1_fastq = "trimmed.barcoded.1.fastq.gz" if config["read_mapper"] != "ema" else "sorted.1.fastq.gz",
+        r2_fastq = "trimmed.barcoded.2.fastq.gz" if config["read_mapper"] != "ema" else "sorted.2.fastq.gz"
     threads: 20
     log: "read_mapping.log"
     run:
@@ -63,6 +121,13 @@ rule map_reads:
                 " {config[genome_reference]}"
                 " {input.r1_fastq}"
                 " {input.r2_fastq}",
+            "ema":
+                "ema align"
+                " -1 <(pigz -cd {input.r1_fastq})"
+                " -2 <(pigz -cd {input.r2_fastq})"
+                " -r {config[genome_reference]}"
+                " -t {threads}"
+                " -p 10x"
         }
         command = commands[config["read_mapper"]].format(**locals(), **globals())
 
@@ -79,17 +144,31 @@ rule map_reads:
 
 
 rule tagbam:
-    # Add barcodes to BAM
+    # Add barcodes to BAM files as SAM tags. Also adds a RG tag.
     output:
         bam = "mapped.sorted.tag.mkdup.bam" if config['duplicate_marker'] == 'samblaster' else "mapped.sorted.tag.bam"
     input:
         bam = "mapped.sorted.bam"
-    log: "tag_bam.stderr"
-    shell:
-        "blr tagbam"
-        " {input.bam}"
-        " -o {output.bam}"
-        " -b {config[cluster_tag]} 2> {log}"
+    log: "tag_bam.log"
+    run:
+        mode = "sam" if config["read_mapper"] != "ema" else "ema"
+        shell(
+            "blr tagbam"
+            " {input.bam}"
+            " -o -"
+            " -f {mode}"
+            " 2> {log}"
+            " | "
+            "samtools addreplacerg"
+            " -O BAM"
+            " -r ID:1"
+            " -r LB:{config[library_type]}"
+            " -r PU:unit1"
+            " -r SM:20"
+            " -r PL:ILLUMINA"
+            " -"
+            " 2>> {log} "
+            " > {output.bam}")
 
 
 rule mark_duplicates:
@@ -126,7 +205,7 @@ rule buildmolecules:
     # Groups reads into molecules depending on their genomic position and barcode
     output:
         bam = "mapped.sorted.tag.mkdup.bcmerge.mol.bam",
-        stats = expand("{stat}.tsv", stat=['molecules_per_bc', 'molecule_stats'])
+        stats = "molecule_stats.tsv"
     input:
         bam = "mapped.sorted.tag.mkdup.bcmerge.bam"
     log: "buildmolecules.log"
@@ -173,6 +252,7 @@ rule bam_to_fastq:
     shell:
         "samtools fastq"
         " -@ {threads}"
+        " -T {config[cluster_tag]},{config[sequence_tag]}"
         " {input.bam}"
         " -1 {output.r1_fastq}"
         " -2 {output.r2_fastq} 2>> {log}"
@@ -184,13 +264,103 @@ rule symlink_reference_variants:
         "ln -s {config[reference_variants]} {output}"
 
 
-rule call_variants_freebayes:
+rule recal_base_qual_scores:
+    "Recalibrate base calling qualities"
+    output:
+        recal_table = "gatk_BQSR_table.txt"
+    input:
+        bam = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.bam"
+    log: "recal_base_qual_scores.log"
+    shell:
+        "gatk --java-options -Xmx{config[heap_space]}g BaseRecalibrator"
+        " -R {config[genome_reference]}"
+        " --known-sites {config[dbSNP]}"
+        " -I {input.bam}"
+        " -O {output.recal_table}"
+        " 2> {log}"
+
+
+rule apply_recal:
+    "Adjusts bam file with results from gatk base score recalibration"
+    output:
+        recal_bam = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.BQSR.bam"
+    input:
+        bam = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.bam",
+        recal_table = "gatk_BQSR_table.txt"
+    log: "apply_recal.log"
+    shell:
+        "gatk --java-options -Xmx{config[heap_space]}g ApplyBQSR"
+        " --bqsr-recal-file {input.recal_table}"
+        " -R {config[genome_reference]}"
+        " -I {input.bam}"
+        " 2> {log}"
+        " -O {output.recal_bam}"
+
+rule index_bam_pre_variant_caller:
+    output:
+        bai = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.BQSR.bam.bai"
+    input:
+        bam = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.BQSR.bam"
+    log: "index_bam_pre_variant_caller.log"
+    shell:
+        "samtools index"
+        " {input.bam}"
+        " {output.bai}"
+
+
+rule call_variants:
     output:
          vcf = "variants.called.vcf"
     input:
-         bam = "mapped.sorted.tag.mkdup.bcmerge.mol.filt.bam"
-    log: "call_variants_freebayes.log"
-    shell:
-         "freebayes"
-         " -f {config[genome_reference]}"
-         " {input.bam} 1> {output.vcf} 2> {log}"
+         bam = f"mapped.sorted.tag.mkdup.bcmerge.mol.filt.{'BQSR.' if config['BQSR'] else ''}bam",
+         index = f"mapped.sorted.tag.mkdup.bcmerge.mol.filt.{'BQSR' if config['BQSR'] else ''}bam.bai"
+    log: "call_variants.log"
+    run:
+        commands = {
+            "freebayes":
+                 "freebayes"
+                 " -f {config[genome_reference]}"
+                 " {input.bam}"
+                 " 2> {log}"
+                 " | "
+                 "vcffilter"
+                 " -f"
+                 " 'AC > 0'"
+                 " 1> {output.vcf} 2>> {log}",
+            "bcftools":
+                "bcftools mpileup"
+                " -f {config[genome_reference]}"
+                " {input.bam}"
+                " --threads {threads}"
+                " 2> {log}"
+                " | "
+                "bcftools call"
+                " -m"
+                " -v"
+                " -O v"
+                " --ploidy GRCh38"
+                " --threads {threads}"
+                " -o {output.vcf} 2>> {log}",
+            "gatk":
+                "gatk --java-options -Xmx{config[heap_space]}g HaplotypeCaller"
+                " -R {config[genome_reference]}"
+                " -I {input.bam}"
+                " -ERC GVCF"
+                " -O {output.vcf} 2> {log}",
+            # This option is currently not included in the pipeline documentation, but it will run on any system which
+            # - runs Linux (it's not maintained for any other system)
+            # - has deepvariant installed (e.g. through conda)
+            # TODO: Add a conditional installation of deepvariant for Linux systems and add to pipeline docs.
+            "deepvariant":
+                "deepvariant"
+	            " --model_type=WGS"
+	            " --output_vcf={output.vcf}"
+	            " --reads={input.bam}"
+	            " --ref={config[genome_reference]}"
+                }
+
+        command = commands[config["variant_caller"]].format(**locals(), **globals())
+
+        shell(
+            "{command}"
+        )

@@ -1,23 +1,40 @@
+####################
+# General settings #
+####################
 cluster_tag: BX    # Used to store barcode cluster id in bam file. 'BX' is 10x genomic default
 molecule_tag: MI  # Used to store molecule ID, same as 10x default.
 num_mol_tag: MN # Used to store number of molecules per barcode
 sequence_tag: RX    # Used to store original barcode sequence in bam file. 'RX' is 10x genomic default
 genome_reference:  # Path to indexed reference
-read_mapper: bowtie2  # Choose bwa, bowtie2 or minimap2
+dbSNP: # Path to dbSNP file (common SNP sites)
+BQSR: false # Adjust base calling accuracys using gatk's BQSR (true or false). Recommended if variant_caller is gatk
+read_mapper: bowtie2  # Choose bwa, bowtie2, minimap2 or ema
 duplicate_marker: sambamba # Choose sambamba or samblaster
-barcode_max_dist: 2 # Max edit distance (Leveshtein distance) allowed to cluster two barcode sequences together
-max_molecules_per_bc: 260 # Max number of molecules allowed for a single barcode (removes if bc has > 260 molecules).
+library_type: # Library type. Chose blr or 10x.
 
 #################
 # Trim settings #
 #################
+# BLR libraries
 h1: CAGTTGATCATCAGCAGGTAATCTGG # h1 adaptor sequnce, appears before barcode in read1
 h2: CATGACCTCTTGGAACTGTCAGATGTGTATAAGAGACAG # h2 adaptor sequence, appears after barcode in read1
 h3: CTGTCTCTTATACACATCT # h3 adaptor sequence, appears after genomics insert in read1 and read2.
 barcode_len: 20 # Length of barcode sequence
 
+# 10x libraries
+barcode_whitelist: # Path to barcode whitelist.
+apply_hamming_correction: false # Apply hamming correction when demultiplexing 10x barcodes. Increases runtime.
+
 ####################
 # Phasing settings #
 ####################
-reference_variants: #Path to reference variants used for phasing, if not provided then variant will be called by freebayes
-phasing_ground_truth: #Path to phased variants used for calculating stats
+reference_variants: # Path to reference variants used for phasing, if None will call variants with `variant_caller`
+phasing_ground_truth: # Path to phased variants used for calculating stats
+variant_caller: freebayes # Choose freebayes, gatk or bcftools
+
+##############################
+# Software-specific settings #
+##############################
+heap_space: 90 # GATK: Maximum heap space (~memory) to run java script with, as number of Gb.
+barcode_max_dist: 2 # blr: Max edit distance (Leveshtein distance) allowed to cluster two barcode sequences together
+max_molecules_per_bc: 260 # blr: Max number of molecules allowed for a single barcode (removes if bc has > 260 molecules).

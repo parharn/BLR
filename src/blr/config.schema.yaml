@@ -19,7 +19,7 @@ properties:
     default: RX
   read_mapper:
     type: string
-    pattern: "bwa|bowtie2|minimap2"
+    pattern: "bwa|bowtie2|minimap2|ema"
     description: Which read mapper to use
   duplicate_marker:
     type: string
@@ -28,6 +28,13 @@ properties:
   genome_reference:
     type: [ "string", "null" ]
     description: Reference index prefix
+  dbSNP:
+    type: ["string", "null" ]
+    description: dbSNP, common SNP positions
+  BQSR:
+    type: boolean
+    default: false
+    description: Run gatk base score recalibration or not
   h1:
     type: string
     description: h1 adaptor sequnce, appears before barcode in read1
@@ -52,4 +59,21 @@ properties:
   max_molecules_per_bc:
     type: integer
     description: Max number of molecules allowed for a single barcode (removes if bc has > 260 molecules).
-
+  variant_caller:
+    type: string
+    description: Which variant caller to use.
+    pattern: "gatk|bcftools|freebayes|deepvariant"
+  heap_space:
+    type: integer
+    description: Heap space to run java scripts with (gatk).
+  library_type:
+    type: string
+    pattern: "blr|10x"
+    description: Library type.
+  barcode_whitelist:
+    type: [ "string", "null" ]
+    description: Path to barcode whitelist for 10x linked-read demultiplexing
+  apply_hamming_correction:
+    type: boolean
+    default: false
+    description: Apply hamming correction when demultiplexing 10x barcodes. Increases runtime.

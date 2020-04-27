@@ -1,20 +1,20 @@
 """
-Rules connected to trimming of FASTQ files.
+Rules for trimming and demultiplexing of raw BLR FASTQ files.
 
 READ1 LAYOUT
 
-5'-CAGTTGATCATCAGCAGGTAATCTGGBDVHBDVHBDVHBDVHBDVHCATGACCTCTTGGAACTGTCAGATGTGTATAAGAGACAGNNNN...NNNN(CTGTCTCTTATACACATCT)-3'
-   <------------h1----------><-------DBS--------><-----------------h2------------------><---gDNA--><---------h3-------->
-    h1 may inlude frameshift                                                                        Presence depencd on
-    oligos varying from 0-4                                                                         insert length
+5'-CAGTTGATCATCAGCAGGTAATCTGG BDVHBDVHBDVHBDVHBDVH CATGACCTCTTGGAACTGTCAGATGTGTATAAGAGACAG NNNN...NNNN (CTGTCTCTTATACACATCT)-3'
+   <------------h1----------> <-------DBS--------> <-----------------h2------------------> <---gDNA--> <---------h3-------->
+    h1 may inlude frameshift                                                                           Presence depends on
+    oligos varying from 0-4                                                                            insert length
     extra oligos in 5' end
 
 READ 2 LAYOUT
 
-5'-NNNN...NNNN(CTGTCTCTTATACACATCT)-3'
-   <---gDNA--><---------h3-------->
-              Presence depencd on
-              insert length
+5'-NNNN...NNNN (CTGTCTCTTATACACATCT)-3'
+   <---gDNA--> <---------h3-------->
+               Presence depends on
+               insert length
 """
 
 DBS = "N"*config["barcode_len"]
@@ -54,10 +54,12 @@ rule trim_and_tag:
         " --o2 {output.r2_fastq}"
         " -b {config[cluster_tag]}"
         " -s {config[sequence_tag]}"
+        " --mapper {config[read_mapper]}"
         " {input.uncorrected_barcodes}"
         " {input.corrected_barcodes}"
         " -"
         " 2> {log.tag}"
+
 
 rule extract_DBS:
     # Extract barcode sequence from read1 FASTQ
@@ -75,6 +77,25 @@ rule extract_DBS:
         " -j {threads}"
         " -m 19"
         " -M 21"
+	    " --max-n 0"
         " -o {output.fastq}"
         " {input.fastq}"
         " > {log}"
+
+
+rule starcode_clustering:
+    # Cluster DBS barcodes using starcode
+    output:
+        "barcodes.clstr"
+    input:
+        "barcodes.fasta.gz"
+    threads: 20
+    log: "starcode_clustering.log"
+    shell:
+        "pigz -cd {input} |"
+        " starcode"
+        " -o {output}"
+        " -t {threads}"
+        " -d {config[barcode_max_dist]}"
+        " --print-clusters"
+        " 2> {log}"
